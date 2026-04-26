@@ -1,7 +1,7 @@
 import ModelClient, { isUnexpected } from '@azure-rest/ai-inference';
 import type { AzureKeyCredential } from '@azure/core-auth';
 import { LLMProvider } from '@inferagraph/core';
-import type { LLMCompletionRequest, LLMCompletionResponse } from '@inferagraph/core';
+import type { LLMCompletionRequest, LLMCompletionResponse, LLMStreamChunk } from '@inferagraph/core';
 import type { AzureFoundryProviderConfig } from './types.js';
 
 const DEFAULT_MAX_TOKENS = 1024;
@@ -55,6 +55,46 @@ export class AzureFoundryProvider extends LLMProvider {
           }
         : undefined,
     };
+  }
+
+  async *stream(request: LLMCompletionRequest): AsyncIterable<LLMStreamChunk> {
+    const messages = request.messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    const body: Record<string, unknown> = {
+      messages,
+      max_tokens: request.maxTokens ?? this.maxTokens,
+      stream: true,
+      ...(this.deploymentName ? { model: this.deploymentName } : {}),
+    };
+
+    try {
+      const response = await this.client.path('/chat/completions').post({ body } as any);
+
+      if (isUnexpected(response)) {
+        throw new Error(`Azure AI Foundry request failed: ${response.status}`);
+      }
+
+      const result = response.body as any;
+      if (Symbol.asyncIterator in result) {
+        for await (const chunk of result) {
+          const content = chunk.choices?.[0]?.delta?.content;
+          if (content) {
+            yield { type: 'text' as const, content };
+          }
+        }
+      } else {
+        const choice = result.choices?.[0];
+        if (choice?.message?.content) {
+          yield { type: 'text' as const, content: choice.message.content };
+        }
+      }
+      yield { type: 'done' as const, content: '' };
+    } catch (error) {
+      yield { type: 'error' as const, content: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   isConfigured(): boolean {
