@@ -46,20 +46,13 @@ describe('AzureFoundryProvider', () => {
     expect(provider.isConfigured()).toBe(true);
   });
 
-  it('should complete a request', async () => {
-    const result = await provider.complete({
-      messages: [{ role: 'user', content: 'Who is Adam?' }],
-    });
-    expect(result.content).toBe('Test Azure response.');
-    expect(result.usage?.inputTokens).toBe(40);
-    expect(result.usage?.outputTokens).toBe(8);
+  it('should complete a prompt', async () => {
+    const result = await provider.complete('Who is Adam?');
+    expect(result).toBe('Test Azure response.');
   });
 
-  it('should pass maxTokens from request when provided', async () => {
-    await provider.complete({
-      messages: [{ role: 'user', content: 'test' }],
-      maxTokens: 512,
-    });
+  it('should pass maxTokens from options when provided', async () => {
+    await provider.complete('test', { maxTokens: 512 });
     expect(mockPost).toHaveBeenCalledWith(
       expect.objectContaining({
         body: expect.objectContaining({ max_tokens: 512 }),
@@ -97,11 +90,9 @@ describe('AzureFoundryProvider', () => {
     mockIsUnexpected.mockReturnValueOnce(true);
     mockPost.mockResolvedValueOnce({ status: '400', body: {} });
 
-    await expect(
-      provider.complete({
-        messages: [{ role: 'user', content: 'test' }],
-      }),
-    ).rejects.toThrow('Azure AI Foundry request failed: 400');
+    await expect(provider.complete('test')).rejects.toThrow(
+      'Azure AI Foundry request failed: 400',
+    );
   });
 
   it('should handle empty choices', async () => {
@@ -113,25 +104,20 @@ describe('AzureFoundryProvider', () => {
       },
     });
 
-    const result = await provider.complete({
-      messages: [{ role: 'user', content: 'test' }],
-    });
-    expect(result.content).toBe('');
+    const result = await provider.complete('test');
+    expect(result).toBe('');
   });
 
-  it('should return undefined usage when response has no usage', async () => {
+  it('should return empty string when message has no content', async () => {
     mockPost.mockResolvedValueOnce({
       status: '200',
       body: {
-        choices: [{ message: { content: 'hi' } }],
+        choices: [{ message: {} }],
       },
     });
 
-    const result = await provider.complete({
-      messages: [{ role: 'user', content: 'test' }],
-    });
-    expect(result.content).toBe('hi');
-    expect(result.usage).toBeUndefined();
+    const result = await provider.complete('test');
+    expect(result).toBe('');
   });
 
   it('should include model in body when deploymentName is set', async () => {
@@ -141,9 +127,7 @@ describe('AzureFoundryProvider', () => {
       deploymentName: 'my-model',
     });
 
-    await custom.complete({
-      messages: [{ role: 'user', content: 'test' }],
-    });
+    await custom.complete('test');
 
     expect(mockPost).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -152,8 +136,17 @@ describe('AzureFoundryProvider', () => {
     );
   });
 
+  it('should pass temperature when provided', async () => {
+    await provider.complete('test', { temperature: 0.3 });
+    expect(mockPost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({ temperature: 0.3 }),
+      }),
+    );
+  });
+
   describe('stream', () => {
-    it('should yield text chunks and done for async iterable response', async () => {
+    it('should yield text deltas and done for async iterable response', async () => {
       const asyncBody = {
         [Symbol.asyncIterator]: async function* () {
           yield { choices: [{ delta: { content: 'Hello' } }] };
@@ -167,16 +160,14 @@ describe('AzureFoundryProvider', () => {
       });
 
       const chunks = [];
-      for await (const chunk of provider.stream({
-        messages: [{ role: 'user', content: 'Hi' }],
-      })) {
+      for await (const chunk of provider.stream('Hi')) {
         chunks.push(chunk);
       }
 
       expect(chunks).toEqual([
-        { type: 'text', content: 'Hello' },
-        { type: 'text', content: ' world' },
-        { type: 'done', content: '' },
+        { type: 'text', delta: 'Hello' },
+        { type: 'text', delta: ' world' },
+        { type: 'done', reason: 'stop' },
       ]);
     });
 
@@ -195,15 +186,13 @@ describe('AzureFoundryProvider', () => {
       });
 
       const chunks = [];
-      for await (const chunk of provider.stream({
-        messages: [{ role: 'user', content: 'Hi' }],
-      })) {
+      for await (const chunk of provider.stream('Hi')) {
         chunks.push(chunk);
       }
 
       expect(chunks).toEqual([
-        { type: 'text', content: 'data' },
-        { type: 'done', content: '' },
+        { type: 'text', delta: 'data' },
+        { type: 'done', reason: 'stop' },
       ]);
     });
 
@@ -216,15 +205,13 @@ describe('AzureFoundryProvider', () => {
       });
 
       const chunks = [];
-      for await (const chunk of provider.stream({
-        messages: [{ role: 'user', content: 'Hi' }],
-      })) {
+      for await (const chunk of provider.stream('Hi')) {
         chunks.push(chunk);
       }
 
       expect(chunks).toEqual([
-        { type: 'text', content: 'non-stream response' },
-        { type: 'done', content: '' },
+        { type: 'text', delta: 'non-stream response' },
+        { type: 'done', reason: 'stop' },
       ]);
     });
 
@@ -237,15 +224,11 @@ describe('AzureFoundryProvider', () => {
       });
 
       const chunks = [];
-      for await (const chunk of provider.stream({
-        messages: [{ role: 'user', content: 'Hi' }],
-      })) {
+      for await (const chunk of provider.stream('Hi')) {
         chunks.push(chunk);
       }
 
-      expect(chunks).toEqual([
-        { type: 'done', content: '' },
-      ]);
+      expect(chunks).toEqual([{ type: 'done', reason: 'stop' }]);
     });
 
     it('should handle non-streaming body with empty choices', async () => {
@@ -257,61 +240,42 @@ describe('AzureFoundryProvider', () => {
       });
 
       const chunks = [];
-      for await (const chunk of provider.stream({
-        messages: [{ role: 'user', content: 'Hi' }],
-      })) {
+      for await (const chunk of provider.stream('Hi')) {
         chunks.push(chunk);
       }
 
-      expect(chunks).toEqual([
-        { type: 'done', content: '' },
-      ]);
+      expect(chunks).toEqual([{ type: 'done', reason: 'stop' }]);
     });
 
-    it('should yield error chunk on unexpected response in stream', async () => {
+    it('should throw on unexpected response in stream', async () => {
       mockIsUnexpected.mockReturnValueOnce(true);
       mockPost.mockResolvedValueOnce({ status: '500', body: {} });
 
-      const chunks = [];
-      for await (const chunk of provider.stream({
-        messages: [{ role: 'user', content: 'Hi' }],
-      })) {
-        chunks.push(chunk);
-      }
-
-      expect(chunks).toEqual([
-        { type: 'error', content: 'Azure AI Foundry request failed: 500' },
-      ]);
+      await expect(async () => {
+        for await (const _chunk of provider.stream('Hi')) {
+          // consume
+        }
+      }).rejects.toThrow('Azure AI Foundry request failed: 500');
     });
 
-    it('should yield error chunk on network failure', async () => {
+    it('should propagate network errors via throw', async () => {
       mockPost.mockRejectedValueOnce(new Error('Network error'));
 
-      const chunks = [];
-      for await (const chunk of provider.stream({
-        messages: [{ role: 'user', content: 'Hi' }],
-      })) {
-        chunks.push(chunk);
-      }
-
-      expect(chunks).toEqual([
-        { type: 'error', content: 'Network error' },
-      ]);
+      await expect(async () => {
+        for await (const _chunk of provider.stream('Hi')) {
+          // consume
+        }
+      }).rejects.toThrow('Network error');
     });
 
-    it('should yield error chunk with stringified non-Error', async () => {
+    it('should propagate non-Error rejections via throw', async () => {
       mockPost.mockRejectedValueOnce('something went wrong');
 
-      const chunks = [];
-      for await (const chunk of provider.stream({
-        messages: [{ role: 'user', content: 'Hi' }],
-      })) {
-        chunks.push(chunk);
-      }
-
-      expect(chunks).toEqual([
-        { type: 'error', content: 'something went wrong' },
-      ]);
+      await expect(async () => {
+        for await (const _chunk of provider.stream('Hi')) {
+          // consume
+        }
+      }).rejects.toBe('something went wrong');
     });
 
     it('should include model in stream body when deploymentName is set', async () => {
@@ -326,9 +290,7 @@ describe('AzureFoundryProvider', () => {
         body: { choices: [] },
       });
 
-      for await (const _chunk of custom.stream({
-        messages: [{ role: 'user', content: 'Hi' }],
-      })) {
+      for await (const _chunk of custom.stream('Hi')) {
         // consume
       }
 
@@ -339,16 +301,13 @@ describe('AzureFoundryProvider', () => {
       );
     });
 
-    it('should use request maxTokens over default in stream', async () => {
+    it('should use options maxTokens over default in stream', async () => {
       mockPost.mockResolvedValueOnce({
         status: '200',
         body: { choices: [] },
       });
 
-      for await (const _chunk of provider.stream({
-        messages: [{ role: 'user', content: 'Hi' }],
-        maxTokens: 256,
-      })) {
+      for await (const _chunk of provider.stream('Hi', { maxTokens: 256 })) {
         // consume
       }
 
@@ -357,6 +316,32 @@ describe('AzureFoundryProvider', () => {
           body: expect.objectContaining({ max_tokens: 256 }),
         }),
       );
+    });
+
+    it('should mark done with aborted reason when signal fires mid-stream', async () => {
+      const controller = new AbortController();
+      const asyncBody = {
+        [Symbol.asyncIterator]: async function* () {
+          yield { choices: [{ delta: { content: 'first' } }] };
+          controller.abort();
+          yield { choices: [{ delta: { content: 'second' } }] };
+        },
+      };
+
+      mockPost.mockResolvedValueOnce({
+        status: '200',
+        body: asyncBody,
+      });
+
+      const chunks = [];
+      for await (const chunk of provider.stream('Hi', { signal: controller.signal })) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks).toEqual([
+        { type: 'text', delta: 'first' },
+        { type: 'done', reason: 'aborted' },
+      ]);
     });
   });
 });
