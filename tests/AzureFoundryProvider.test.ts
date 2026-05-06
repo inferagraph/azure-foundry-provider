@@ -344,4 +344,202 @@ describe('AzureFoundryProvider', () => {
       ]);
     });
   });
+
+  // The Azure AI Foundry chat-completions endpoint is OpenAI-compatible:
+  // request body has a top-level `messages: [{role, content}]` array where
+  // `role` is one of 'system' | 'user' | 'assistant'. LLMRole maps 1:1 to
+  // the SDK role names — no translation needed. Each LLMMessage becomes
+  // one entry in the `messages` array, in the supplied order.
+  describe('streamMessages', () => {
+    function asyncIterableBody(deltas: string[]) {
+      return {
+        [Symbol.asyncIterator]: async function* () {
+          for (const delta of deltas) {
+            yield { choices: [{ delta: { content: delta } }] };
+          }
+        },
+      };
+    }
+
+    it('forwards every message verbatim', async () => {
+      mockPost.mockResolvedValueOnce({
+        status: '200',
+        body: asyncIterableBody(['ok']),
+      });
+
+      for await (const _chunk of provider.streamMessages([
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'usr' },
+      ])) {
+        // consume
+      }
+
+      expect(mockPost).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            messages: [
+              { role: 'system', content: 'sys' },
+              { role: 'user', content: 'usr' },
+            ],
+          }),
+        }),
+      );
+    });
+
+    it('preserves the system role separately from user content', async () => {
+      // Foundry chat-completions is OpenAI-style: system instructions live
+      // in their own message entry with role:'system', NOT glued onto the
+      // user message. This asserts that contract.
+      mockPost.mockResolvedValueOnce({
+        status: '200',
+        body: asyncIterableBody(['ok']),
+      });
+
+      for await (const _chunk of provider.streamMessages([
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Hi.' },
+      ])) {
+        // consume
+      }
+
+      const call = mockPost.mock.calls[0]?.[0] as { body: { messages: unknown[] } };
+      expect(call.body.messages).toEqual([
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Hi.' },
+      ]);
+      // Explicitly: the user-role entry must NOT contain the system text.
+      const userEntry = (call.body.messages as Array<{ role: string; content: string }>)[1];
+      expect(userEntry.content).toBe('Hi.');
+      expect(userEntry.content).not.toContain('helpful assistant');
+    });
+
+    it('preserves multiple turns (user/assistant interleaved)', async () => {
+      mockPost.mockResolvedValueOnce({
+        status: '200',
+        body: asyncIterableBody(['ok']),
+      });
+
+      const turns = [
+        { role: 'system' as const, content: 'sys' },
+        { role: 'user' as const, content: 'q1' },
+        { role: 'assistant' as const, content: 'a1' },
+        { role: 'user' as const, content: 'q2' },
+      ];
+
+      for await (const _chunk of provider.streamMessages(turns)) {
+        // consume
+      }
+
+      expect(mockPost).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({ messages: turns }),
+        }),
+      );
+    });
+
+    it('forwards the tools option', async () => {
+      mockPost.mockResolvedValueOnce({
+        status: '200',
+        body: asyncIterableBody(['ok']),
+      });
+
+      const tools = [
+        {
+          name: 'search_nodes',
+          description: 'Search the graph',
+          parameters: { type: 'object', properties: {} },
+        },
+      ];
+
+      for await (const _chunk of provider.streamMessages(
+        [{ role: 'user', content: 'find adam' }],
+        { tools },
+      )) {
+        // consume
+      }
+
+      expect(mockPost).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({ tools }),
+        }),
+      );
+    });
+
+    it('honors AbortSignal', async () => {
+      const controller = new AbortController();
+      mockPost.mockResolvedValueOnce({
+        status: '200',
+        body: {
+          [Symbol.asyncIterator]: async function* () {
+            yield { choices: [{ delta: { content: 'first' } }] };
+            controller.abort();
+            yield { choices: [{ delta: { content: 'second' } }] };
+          },
+        },
+      });
+
+      const chunks = [];
+      for await (const chunk of provider.streamMessages(
+        [{ role: 'user', content: 'go' }],
+        { signal: controller.signal },
+      )) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks).toEqual([
+        { type: 'text', delta: 'first' },
+        { type: 'done', reason: 'aborted' },
+      ]);
+    });
+
+    it('yields the same chunk shape as stream()', async () => {
+      mockPost.mockResolvedValueOnce({
+        status: '200',
+        body: asyncIterableBody(['Hello', ' world']),
+      });
+      const streamChunks = [];
+      for await (const chunk of provider.stream('Hi')) {
+        streamChunks.push(chunk);
+      }
+
+      mockPost.mockResolvedValueOnce({
+        status: '200',
+        body: asyncIterableBody(['Hello', ' world']),
+      });
+      const messagesChunks = [];
+      for await (const chunk of provider.streamMessages([
+        { role: 'user', content: 'Hi' },
+      ])) {
+        messagesChunks.push(chunk);
+      }
+
+      expect(messagesChunks).toEqual(streamChunks);
+    });
+
+    it('stream() still works (back-compat)', async () => {
+      mockPost.mockResolvedValueOnce({
+        status: '200',
+        body: asyncIterableBody(['back', '-compat']),
+      });
+
+      const chunks = [];
+      for await (const chunk of provider.stream('legacy')) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks).toEqual([
+        { type: 'text', delta: 'back' },
+        { type: 'text', delta: '-compat' },
+        { type: 'done', reason: 'stop' },
+      ]);
+      expect(mockPost).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            messages: [{ role: 'user', content: 'legacy' }],
+            stream: true,
+          }),
+        }),
+      );
+    });
+  });
 });

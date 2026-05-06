@@ -2,6 +2,7 @@ import ModelClient, { isUnexpected } from '@azure-rest/ai-inference';
 import type { AzureKeyCredential } from '@azure/core-auth';
 import type {
   CompleteOptions,
+  LLMMessage,
   LLMProvider,
   LLMStreamEvent,
   StreamOptions,
@@ -10,8 +11,12 @@ import type { AzureFoundryProviderConfig } from './types.js';
 
 const DEFAULT_MAX_TOKENS = 1024;
 
+// Azure AI Foundry's chat-completions endpoint is OpenAI-compatible: each
+// message is `{role, content}` where `role` is 'system' | 'user' |
+// 'assistant'. LLMRole maps 1:1 to the SDK role names — no translation
+// required.
 interface AzureChatMessage {
-  role: 'user';
+  role: 'system' | 'user' | 'assistant';
   content: string;
 }
 
@@ -67,7 +72,23 @@ export class AzureFoundryProvider implements LLMProvider {
       this.client,
       this.deploymentName,
       this.maxTokens,
-      prompt,
+      [{ role: 'user', content: prompt }],
+      opts,
+    );
+  }
+
+  streamMessages(
+    messages: LLMMessage[],
+    opts?: StreamOptions,
+  ): AsyncIterable<LLMStreamEvent> {
+    // LLMRole ('system' | 'user' | 'assistant') maps 1:1 to the Foundry
+    // chat-completions role names; pass roles and content through verbatim
+    // so system instructions stay separate from user input.
+    return azureFoundryStream(
+      this.client,
+      this.deploymentName,
+      this.maxTokens,
+      messages.map((m) => ({ role: m.role, content: m.content })),
       opts,
     );
   }
@@ -81,16 +102,15 @@ async function* azureFoundryStream(
   client: ReturnType<typeof ModelClient>,
   deploymentName: string | undefined,
   defaultMaxTokens: number,
-  prompt: string,
+  messages: AzureChatMessage[],
   opts: StreamOptions = {},
 ): AsyncIterable<LLMStreamEvent> {
-  const messages: AzureChatMessage[] = [{ role: 'user', content: prompt }];
-
   const body: Record<string, unknown> = {
     messages,
     max_tokens: opts.maxTokens ?? defaultMaxTokens,
     stream: true,
     ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+    ...(opts.tools !== undefined ? { tools: opts.tools } : {}),
     ...(deploymentName ? { model: deploymentName } : {}),
   };
 
