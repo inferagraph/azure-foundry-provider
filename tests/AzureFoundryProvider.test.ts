@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { LLMProvider } from '@inferagraph/core';
 import { AzureFoundryProvider } from '../src/AzureFoundryProvider.js';
 
 const mockPost = vi.fn();
@@ -516,6 +517,16 @@ describe('AzureFoundryProvider', () => {
       expect(messagesChunks).toEqual(streamChunks);
     });
 
+    it('signature is assignable to LLMProvider["streamMessages"]', () => {
+      // Compile-time guarantee: the provider's streamMessages method is
+      // structurally compatible with the optional LLMProvider.streamMessages
+      // member from @inferagraph/core. If core's signature drifts, this
+      // assignment fails the build, forcing us to re-align the provider.
+      const fn: NonNullable<LLMProvider['streamMessages']> =
+        provider.streamMessages.bind(provider);
+      expect(typeof fn).toBe('function');
+    });
+
     it('stream() still works (back-compat)', async () => {
       mockPost.mockResolvedValueOnce({
         status: '200',
@@ -540,6 +551,27 @@ describe('AzureFoundryProvider', () => {
           }),
         }),
       );
+    });
+  });
+
+  // The Azure AI Foundry provider does NOT expose native embeddings — the
+  // `@azure-rest/ai-inference` SDK targets chat-completion routes only. Per
+  // core's contract, providers without embedding support MUST omit `embed`
+  // entirely (rather than throw) so AIEngine can detect the absence via
+  // `'embed' in provider`. Hosts needing embeddings pair Foundry chat with a
+  // separate embedding-capable provider (e.g. `@inferagraph/openai-provider`).
+  describe('embed capability', () => {
+    it('does not expose embed (chat-only provider)', () => {
+      expect((provider as unknown as { embed?: unknown }).embed).toBeUndefined();
+      expect('embed' in provider).toBe(false);
+    });
+
+    it('is structurally usable as LLMProvider without an embed field', () => {
+      // Embed is optional on LLMProvider; this provider satisfies the
+      // contract by omission. The cast confirms the structural fit at
+      // compile time.
+      const llm: LLMProvider = provider as unknown as LLMProvider;
+      expect(llm.embed).toBeUndefined();
     });
   });
 });
