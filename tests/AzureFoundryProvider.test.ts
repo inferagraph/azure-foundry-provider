@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { LLMProvider } from '@inferagraph/core';
+import type { LLMProvider } from '@inferagraph/core/data';
 import { AzureFoundryProvider } from '../src/AzureFoundryProvider.js';
 
 const mockPost = vi.fn();

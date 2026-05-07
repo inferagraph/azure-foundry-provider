@@ -1,6 +1,6 @@
 {
   "name": "@inferagraph/azure-foundry-provider",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Azure AI Foundry provider for InferaGraph",
   "repository": {
     "type": "git",

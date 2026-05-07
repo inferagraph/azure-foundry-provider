@@ -6,7 +6,7 @@ import type {
   LLMProvider,
   LLMStreamEvent,
   StreamOptions,
-} from '@inferagraph/core';
+} from '@inferagraph/core/data';
 import type { AzureFoundryProviderConfig } from './types.js';
 
 const DEFAULT_MAX_TOKENS = 1024;
