@@ -1,6 +1,6 @@
 {
   "name": "@inferagraph/azure-foundry-provider",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Azure AI Foundry provider for InferaGraph",
   "repository": {
     "type": "git",
@@ -28,7 +28,7 @@
   "packageManager": "pnpm@10.33.2",
   "license": "MIT",
   "peerDependencies": {
-    "@inferagraph/core": "^0.8.0"
+    "@inferagraph/core": "^0.9.1"
   },
   "dependencies": {
     "@azure-rest/ai-inference": "^1.0.0-beta.6",
